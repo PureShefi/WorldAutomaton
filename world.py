@@ -4,17 +4,22 @@ import copy
 import time
 from enum import Enum
 from tkinter import *
+from pandas import DataFrame
+import matplotlib.pyplot as plt
+
 
 # I want to get the same random each run
 random.seed(0)
 
 MELTING_POINT = 20
 
-POLLUTION_CHANGE = 0.05
-POLLUTION_THRESHOLD = 0.5
+POLLUTION_CHANGE = 0.001
+POLLUTION_THRESHOLD = 0.05
 POLLUTION_FACTOR = 3
-POLLUTION_DOWNAGE = 0.02
+POLLUTION_DOWNAGE = POLLUTION_CHANGE / 2
+RAIN_POLLUTION_REDUCTION = 0.01
 RAIN_CHANCE = 20
+RAIN_TEMPATURE_CHANGE = 2.5
 
 WIND_TTL = 3
 STRONG_WIND_THRESHOLD = 2
@@ -25,6 +30,8 @@ MIN_TEMPERATURE = -10
 MAX_HEIGHT = 100
 CLOUDY_CHANCE = 4
 HEIGHT_RAIN_FACTOR = 33
+
+TOTAL_DAYS = 365
 
 CANVAS_HEIGHT = 600
 CANVAS_WIDTH = 1000
@@ -138,7 +145,6 @@ class EarthAutomaton(Tk):
         self.height = GRID_HEIGHT
         self.width = GRID_WIDTH
         self.blocks = [[self.init_cell_state() for i in range(self.width)] for j in range(self.height)]
-        self.water_height = 0
         self.day = 0
 
         # Content frame
@@ -164,6 +170,9 @@ class EarthAutomaton(Tk):
         self.next = Button(self.controls, text='Next',
                 command=self.next_step)
         self.next.grid(row=0, column=2, sticky=(W))
+        self.next = Button(self.controls, text='Next 50',
+                command=self.next_50_steps)
+        self.next.grid(row=0, column=3, sticky=(W))
 
         #Size Configuration
         self.columnconfigure(0, weight=1)
@@ -178,22 +187,29 @@ class EarthAutomaton(Tk):
 
         # Keep track of old steps
         self.old = []
+        self.calculate_all()
 
+    def calculate_all(self):
+        for i in range(TOTAL_DAYS + 1):
+            self.old.append(copy.deepcopy(self.blocks))
+            self.step()
+
+        self.standard_deviation()
 
     def next_step(self):
-        start_time = time.time()
-        self.day += 1
-        self.old.append((copy.deepcopy(self.blocks), self.water_height))
-        self.step()
+        self.day = min(self.day + 1, TOTAL_DAYS)
+        self.blocks = self.old[self.day]
         self.draw()
-        print("Time: {}".format(time.time() - start_time))
+
+    def next_50_steps(self):
+        self.day = min(self.day + 50, TOTAL_DAYS)
+        self.blocks = self.old[self.day]
+        self.draw()
 
     def previous_step(self):
-        if self.day == 0:
-            return
-
+        self.day = max(self.day - 1, 0)
         self.day -= 1
-        self.blocks, self.water_height = self.old.pop()
+        self.blocks = self.old[self.day]
         self.draw()
 
     def draw(self, event=None):
@@ -216,7 +232,7 @@ class EarthAutomaton(Tk):
                 self.canvas.create_text(center, text=info)
                 self.canvas.tag_bind(cell)
 
-        self.day_label["text"] = "Day {}, Water Level {}m".format(self.day, self.water_height)
+        self.day_label["text"] = "Day {}".format(self.day)
 
     def step(self):
         for row in range(self.height):
@@ -226,11 +242,7 @@ class EarthAutomaton(Tk):
         # Apply all necessary changes
         for row in range(self.height):
             for col in range(self.width):
-                if row == 5 and col == 5:
-                    print(self.blocks[row][col].pending_changes)
                 self.blocks[row][col].apply_changes()
-                if row == 5 and col == 5:
-                    print(self.blocks[row][col])
 
 
     def init_cell_state(self):
@@ -246,17 +258,12 @@ class EarthAutomaton(Tk):
     def evolve_rule(self, row, col):
         block = self.blocks[row][col]
 
-        # Raising water height turns land to sea
-        if block.height < self.water_height and block.type != BlockType.ICEBERG:
-            block.type = BlockType.SEA
-
         # Pollution makes the temperature rise
         block.temperature = min(block.pollution + block.temperature, MAX_TEMPERATURE)
 
         # If its hot, the iceberg melts
         if block.type == BlockType.ICEBERG and block.temperature >= MELTING_POINT:
             block.type = BlockType.SEA
-            self.water_height += 1
 
         # Cities cause pollution
         elif block.type == BlockType.CITY:
@@ -266,7 +273,6 @@ class EarthAutomaton(Tk):
         if block.wind[0] != 0 and block.wind[1] != 0:
             neighbour = self.blocks[(row + block.wind[0]) % self.height][(col + block.wind[1]) % self.width]
             changes = {"pollution": block.pollution / POLLUTION_FACTOR}
-            neighbour.pollution = min(neighbour.pollution + block.pollution / POLLUTION_FACTOR, POLLUTION_THRESHOLD)
 
             # If the wind is strong, it passes on and takes a new strength
             if block.wind[2] > STRONG_WIND_THRESHOLD:
@@ -281,7 +287,8 @@ class EarthAutomaton(Tk):
         if block.cloudy[0]:
             # If its cloudy there is a random chance of rain (height and temperature help the rain)
             if random.randint(0, max(0, (RAIN_CHANCE - block.height//HEIGHT_RAIN_FACTOR + block.temperature//1))) == 0:
-                block.temperature = clamp(block.temperature - 5, MIN_TEMPERATURE, MAX_TEMPERATURE)
+                block.temperature = clamp(block.temperature - RAIN_TEMPATURE_CHANGE, MIN_TEMPERATURE, MAX_TEMPERATURE)
+                block.pollution = max(block.pollution - RAIN_POLLUTION_REDUCTION, 0)
 
             block.cloudy[0] = block.cloudy[1] != 0
 
@@ -290,16 +297,75 @@ class EarthAutomaton(Tk):
         block.wind[2] = max(block.wind[2] - 1, 0)
         block.pollution = max(block.pollution - POLLUTION_DOWNAGE, 0)
 
-    def run(self):
-        for row in range(self.height):
-            for col in range(self.width):
-                block_height = root.winfo_height() // self.height
-                block_width = root.winfo_height() // self.width
-                top = block_height * row
-                left = block_width * col
-                self.canvas.create_rectangle(top, left, top+self.block_height, left+self.block_width, fill="green", outline = 'red')
-                self.canvas.pack()
-                print(root.winfo_height(), top, left, top+self.block_height, left+self.block_width)
+    def standard_deviation(self):
+        count = 0
+
+        # Calculate mean
+        pollution = 0
+        temperature = 0
+        for day in range(TOTAL_DAYS):
+            count += 1
+            for row in self.old[day]:
+                for block in row:
+                    pollution += block.pollution
+                    temperature += block.temperature
+
+        mean_poll = pollution/count
+        mean_temp = temperature/count
+
+        print("mean_poll", mean_poll)
+        print("mean_temp", mean_temp)
+
+        # Calculate variance
+        sum_mean_poll = 0
+        sum_mean_temp = 0
+        for day in range(TOTAL_DAYS):
+            day_poll = 0
+            day_temp = 0
+            for row in self.old[day]:
+                for block in row:
+                    day_poll += block.pollution
+                    day_temp += block.temperature
+
+            sum_mean_poll += (mean_poll - day_poll) ** 2
+            sum_mean_temp += (mean_temp - day_temp) ** 2
+
+
+        variance_poll = sum_mean_poll / count
+        variance_temp = sum_mean_temp / count
+
+        print("variance_poll", variance_poll)
+        print("variance_temp", variance_temp)
+
+        # Calculate deviant
+        deviant_poll = variance_poll ** 0.5
+        deviant_temp = variance_temp ** 0.5
+
+        print("deviant_poll", deviant_poll)
+        print("deviant_temp", deviant_temp)
+
+
+        data_days = [i for i in range(TOTAL_DAYS)]
+        data_poll = []
+        data_temp = []
+
+        for day in range(TOTAL_DAYS):
+            day_poll = 0
+            day_temp = 0
+            for row in self.old[day]:
+                for block in row:
+                    day_poll += block.pollution
+                    day_temp += block.temperature
+
+            print("day", day, "avg_tmp:", day_temp/100)
+            data_poll.append((day_poll-mean_poll) / deviant_poll)
+            data_temp.append((day_temp-mean_temp) / deviant_temp)
+
+        plt.plot(data_days, data_poll, label="pollution")
+        plt.plot(data_days, data_temp, label="temperature")
+
+        plt.legend()
+        plt.show()
 
 if __name__ == '__main__':
     e = EarthAutomaton()
