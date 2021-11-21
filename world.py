@@ -96,7 +96,7 @@ class Block:
         elif self.wind[0] == 1 and self.wind[1] == 1:
             s += "↘"
         else:
-            print("FUCK", self.wind)
+            print("Invalid wind value", self.wind)
             exit()
         # Add strength
         s += str(self.wind[2])
@@ -174,6 +174,9 @@ class EarthAutomaton(Tk):
                 command=self.next_50_steps)
         self.next.grid(row=0, column=3, sticky=(W))
 
+        self.info_label = Label(self.controls, text="")
+        self.info_label.grid(row=0, column=4, sticky=(W))
+
         #Size Configuration
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
@@ -233,6 +236,20 @@ class EarthAutomaton(Tk):
                 self.canvas.tag_bind(cell)
 
         self.day_label["text"] = "Day {}".format(self.day)
+
+        temp, poll = self.get_average_data_for_day(self.day)
+        self.info_label["text"] = "Average - Tempature:{:.2f}, pollution:{:.2f}".format(temp, poll)
+
+    def get_average_data_for_day(self, day):
+        pollution = 0
+        temperature = 0
+        for row in self.old[day]:
+            for block in row:
+                pollution += block.pollution
+                temperature += block.temperature
+
+        block_count = (self.height * self.width)
+        return temperature / block_count, pollution / block_count
 
     def step(self):
         for row in range(self.height):
