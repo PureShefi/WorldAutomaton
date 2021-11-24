@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
+
 import random
 import copy
 import time
 from enum import Enum
 from tkinter import *
-from pandas import DataFrame
 import matplotlib.pyplot as plt
 
 
@@ -17,9 +17,13 @@ POLLUTION_CHANGE = 0.001
 POLLUTION_THRESHOLD = 0.05
 POLLUTION_FACTOR = 3
 POLLUTION_DOWNAGE = POLLUTION_CHANGE / 2
-RAIN_POLLUTION_REDUCTION = 0.01
-RAIN_CHANCE = 20
+
 RAIN_TEMPATURE_CHANGE = 2.5
+RAIN_POLLUTION_REDUCTION = 0.01
+RAIN_CHANCE = 4
+RAIN_HEIGHT_FACTOR = 20
+RAIN_TEMPATURE_FACTOR = 20
+RAIN_THRESHOLD = 8.5
 
 WIND_TTL = 3
 STRONG_WIND_THRESHOLD = 2
@@ -29,7 +33,6 @@ MAX_TEMPERATURE = 45
 MIN_TEMPERATURE = -10
 MAX_HEIGHT = 100
 CLOUDY_CHANCE = 4
-HEIGHT_RAIN_FACTOR = 33
 
 TOTAL_DAYS = 365
 
@@ -55,11 +58,12 @@ class Block:
     def __init__(self):
         self.type = BlockType.LAND
         self.height = 0
-        self.wind = [0, 0, 0] # Direction of wind like numpad
-        self.cloudy = [False, CLOUD_TTL]
+        self.wind = [0, 0, 0] # [col, row, TTL]
+        self.cloudy = [False, CLOUD_TTL] # [Cloudy, TTL]
         self.pollution = 0
         self.temperature = 0
         self.pending_changes = []
+        self.days_from_last_rain = 0
 
 
     def apply_changes(self):
@@ -186,6 +190,8 @@ class EarthAutomaton(Tk):
         self.controls.columnconfigure(0,weight=1)
         self.controls.columnconfigure(1,weight=1)
         self.controls.columnconfigure(2,weight=1)
+        self.controls.columnconfigure(3,weight=1)
+        self.controls.columnconfigure(4,weight=1)
         self.controls.rowconfigure(0,weight=1)
 
         # Keep track of old steps
@@ -201,21 +207,18 @@ class EarthAutomaton(Tk):
 
     def next_step(self):
         self.day = min(self.day + 1, TOTAL_DAYS)
-        self.blocks = self.old[self.day]
         self.draw()
 
     def next_50_steps(self):
         self.day = min(self.day + 50, TOTAL_DAYS)
-        self.blocks = self.old[self.day]
         self.draw()
 
     def previous_step(self):
         self.day = max(self.day - 1, 0)
-        self.day -= 1
-        self.blocks = self.old[self.day]
         self.draw()
 
     def draw(self, event=None):
+        # Draw each of the rows based on its data
         self.canvas.delete('rect')
         width = int(self.canvas.winfo_width()/self.height)
         height = int(self.canvas.winfo_height()/self.width)
@@ -226,21 +229,20 @@ class EarthAutomaton(Tk):
                 y1 = row*height
                 y2 = y1 + height
 
-                color = self.blocks[row][col].get_color()
+                color = self.old[self.day][row][col].get_color()
                 cell = self.canvas.create_rectangle(x1, y1, x2, y2,
                         fill=color, tags='cell')
 
                 center = ((x1+x2)//2, (y1+y2)//2)
-                info = self.blocks[row][col].get_info()
+                info = self.old[self.day][row][col].get_info()
                 self.canvas.create_text(center, text=info)
                 self.canvas.tag_bind(cell)
 
         self.day_label["text"] = "Day {}".format(self.day)
+        self.info_label["text"] = self.get_day_summary(self.day)
 
-        temp, poll = self.get_average_data_for_day(self.day)
-        self.info_label["text"] = "Average - Tempature:{:.2f}, pollution:{:.2f}".format(temp, poll)
-
-    def get_average_data_for_day(self, day):
+    def get_day_summary(self, day):
+        # Calculates the data for the day and formats a string summary
         pollution = 0
         temperature = 0
         for row in self.old[day]:
@@ -249,7 +251,8 @@ class EarthAutomaton(Tk):
                 temperature += block.temperature
 
         block_count = (self.height * self.width)
-        return temperature / block_count, pollution / block_count
+        temp, poll = temperature / block_count, pollution / block_count
+        return "Average - Tempature:{:.2f}, pollution:{:.2f}".format(temp, poll)
 
     def step(self):
         for row in range(self.height):
@@ -263,6 +266,8 @@ class EarthAutomaton(Tk):
 
 
     def init_cell_state(self):
+        # Init each block instead of doing it manually.
+        # Its not really random because I have a const random seed
         b = Block()
         b.type = random.choice(list(BlockType))
         b.height = random.randint(0, MAX_HEIGHT)
@@ -301,37 +306,36 @@ class EarthAutomaton(Tk):
             neighbour.pending_changes.append(changes)
 
 
+        block.days_from_last_rain += 1
+        # If its cloudy there is a random chance of rain (height and temperature help the rain)
         if block.cloudy[0]:
-            # If its cloudy there is a random chance of rain (height and temperature help the rain)
-            if random.randint(0, max(0, (RAIN_CHANCE - block.height//HEIGHT_RAIN_FACTOR + block.temperature//1))) == 0:
+            will_rain = (block.days_from_last_rain - block.height//RAIN_HEIGHT_FACTOR - block.temperature//RAIN_TEMPATURE_FACTOR) / RAIN_CHANCE
+            if will_rain > RAIN_THRESHOLD:
                 block.temperature = clamp(block.temperature - RAIN_TEMPATURE_CHANGE, MIN_TEMPERATURE, MAX_TEMPERATURE)
                 block.pollution = max(block.pollution - RAIN_POLLUTION_REDUCTION, 0)
+                block.days_from_last_rain = 0
 
             block.cloudy[0] = block.cloudy[1] != 0
 
-        # Reduce each step
+        # Reduce variables each step
         block.cloudy[1] = max(block.cloudy[1] - 1, 0)
         block.wind[2] = max(block.wind[2] - 1, 0)
         block.pollution = max(block.pollution - POLLUTION_DOWNAGE, 0)
 
     def standard_deviation(self):
-        count = 0
+        count = TOTAL_DAYS + 1
 
         # Calculate mean
         pollution = 0
         temperature = 0
         for day in range(TOTAL_DAYS):
-            count += 1
             for row in self.old[day]:
                 for block in row:
                     pollution += block.pollution
                     temperature += block.temperature
 
-        mean_poll = pollution/count
-        mean_temp = temperature/count
-
-        print("mean_poll", mean_poll)
-        print("mean_temp", mean_temp)
+        mean_poll = pollution / count
+        mean_temp = temperature / count
 
         # Calculate variance
         sum_mean_poll = 0
@@ -351,15 +355,9 @@ class EarthAutomaton(Tk):
         variance_poll = sum_mean_poll / count
         variance_temp = sum_mean_temp / count
 
-        print("variance_poll", variance_poll)
-        print("variance_temp", variance_temp)
-
         # Calculate deviant
         deviant_poll = variance_poll ** 0.5
         deviant_temp = variance_temp ** 0.5
-
-        print("deviant_poll", deviant_poll)
-        print("deviant_temp", deviant_temp)
 
 
         data_days = [i for i in range(TOTAL_DAYS)]
@@ -374,15 +372,16 @@ class EarthAutomaton(Tk):
                     day_poll += block.pollution
                     day_temp += block.temperature
 
-            print("day", day, "avg_tmp:", day_temp/100)
             data_poll.append((day_poll-mean_poll) / deviant_poll)
             data_temp.append((day_temp-mean_temp) / deviant_temp)
 
         plt.plot(data_days, data_poll, label="pollution")
         plt.plot(data_days, data_temp, label="temperature")
+        plt.plot(data_days, [0 for x in range(TOTAL_DAYS)])
 
         plt.legend()
         plt.show()
+        exit()
 
 if __name__ == '__main__':
     e = EarthAutomaton()
